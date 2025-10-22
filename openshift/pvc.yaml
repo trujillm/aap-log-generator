@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: aap-mock-data
+  namespace: aap-mock
+  labels:
+    app: aap-mock
+    app.kubernetes.io/name: aap-mock
+    app.kubernetes.io/part-of: aap-mock
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: aap-mock-logs
+  namespace: aap-mock
+  labels:
+    app: aap-mock
+    app.kubernetes.io/name: aap-mock
+    app.kubernetes.io/part-of: aap-mock
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+

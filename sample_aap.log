@@ -1,0 +1,47 @@
+2024-01-15T10:30:00.000Z INFO [job_123] Job 123 started by user admin
+2024-01-15T10:30:01.234Z INFO [job_123] Inventory loaded: production_hosts (15 hosts)
+2024-01-15T10:30:02.567Z INFO [job_123] Playbook loaded: /ansible/playbooks/deploy.yml
+2024-01-15T10:30:03.789Z INFO [job_123:web01.example.com] TASK [Setup environment] started
+2024-01-15T10:30:04.123Z INFO [job_123:web01.example.com] TASK [Setup environment] running
+2024-01-15T10:30:05.456Z INFO [job_123:web01.example.com] TASK [Setup environment] completed successfully
+2024-01-15T10:30:06.789Z INFO [job_123:web02.example.com] TASK [Setup environment] started
+2024-01-15T10:30:07.012Z INFO [job_123:web02.example.com] TASK [Setup environment] running
+2024-01-15T10:30:08.345Z INFO [job_123:web02.example.com] TASK [Setup environment] completed successfully
+2024-01-15T10:30:09.678Z INFO [job_123:db01.example.com] TASK [Setup environment] started
+2024-01-15T10:30:10.901Z INFO [job_123:db01.example.com] TASK [Setup environment] running
+2024-01-15T10:30:12.234Z INFO [job_123:db01.example.com] TASK [Setup environment] completed successfully
+2024-01-15T10:30:15.567Z INFO [job_123:web01.example.com] TASK [Install packages] started
+2024-01-15T10:30:16.890Z INFO [job_123:web01.example.com] TASK [Install packages] running
+2024-01-15T10:30:18.123Z INFO [job_123:web01.example.com] stdout: Reading package lists...
+2024-01-15T10:30:19.456Z INFO [job_123:web01.example.com] stdout: Building dependency tree...
+2024-01-15T10:30:20.789Z INFO [job_123:web01.example.com] TASK [Install packages] completed successfully
+2024-01-15T10:30:22.012Z INFO [job_123:web02.example.com] TASK [Install packages] started
+2024-01-15T10:30:23.345Z INFO [job_123:web02.example.com] TASK [Install packages] running
+2024-01-15T10:30:24.678Z ERROR [job_123:web02.example.com] TASK [Install packages] failed: Package nginx-1.20 not available
+2024-01-15T10:30:25.901Z ERROR [job_123:web02.example.com] stderr: E: Unable to locate package nginx-1.20
+2024-01-15T10:30:27.234Z INFO [job_123:db01.example.com] TASK [Install packages] started
+2024-01-15T10:30:28.567Z INFO [job_123:db01.example.com] TASK [Install packages] running
+2024-01-15T10:30:30.890Z INFO [job_123:db01.example.com] TASK [Install packages] completed successfully
+2024-01-15T10:30:35.123Z INFO [job_123:web01.example.com] TASK [Configure services] started
+2024-01-15T10:30:36.456Z INFO [job_123:web01.example.com] TASK [Configure services] running
+2024-01-15T10:30:38.789Z INFO [job_123:web01.example.com] TASK [Configure services] completed successfully
+2024-01-15T10:30:40.012Z WARN [job_123:web02.example.com] TASK [Configure services] skipped due to previous failure
+2024-01-15T10:30:42.345Z INFO [job_123:db01.example.com] TASK [Configure services] started
+2024-01-15T10:30:43.678Z INFO [job_123:db01.example.com] TASK [Configure services] running
+2024-01-15T10:30:45.901Z INFO [job_123:db01.example.com] TASK [Configure services] completed successfully
+2024-01-15T10:30:50.234Z INFO [job_123:web01.example.com] TASK [Start services] started
+2024-01-15T10:30:51.567Z INFO [job_123:web01.example.com] TASK [Start services] running
+2024-01-15T10:30:53.890Z INFO [job_123:web01.example.com] stdout: ● nginx.service - The nginx HTTP and reverse proxy server
+2024-01-15T10:30:54.123Z INFO [job_123:web01.example.com] stdout:    Loaded: loaded (/usr/lib/systemd/system/nginx.service; enabled; vendor preset: disabled)
+2024-01-15T10:30:55.456Z INFO [job_123:web01.example.com] stdout:    Active: active (running) since Mon 2024-01-15 10:30:55 UTC; 1s ago
+2024-01-15T10:30:56.789Z INFO [job_123:web01.example.com] TASK [Start services] completed successfully
+2024-01-15T10:30:58.012Z WARN [job_123:web02.example.com] TASK [Start services] skipped due to previous failure
+2024-01-15T10:31:00.345Z INFO [job_123:db01.example.com] TASK [Start services] started
+2024-01-15T10:31:01.678Z INFO [job_123:db01.example.com] TASK [Start services] running
+2024-01-15T10:31:03.901Z INFO [job_123:db01.example.com] TASK [Start services] completed successfully
+2024-01-15T10:31:05.234Z INFO [job_123] PLAY RECAP web01.example.com: ok=4 changed=3 unreachable=0 failed=0
+2024-01-15T10:31:06.567Z ERROR [job_123] PLAY RECAP web02.example.com: ok=1 changed=0 unreachable=0 failed=1
+2024-01-15T10:31:07.890Z INFO [job_123] PLAY RECAP db01.example.com: ok=4 changed=3 unreachable=0 failed=0
+2024-01-15T10:31:09.123Z WARN [job_123] Job 123 completed with failures
+2024-01-15T10:31:10.456Z INFO [job_123] Total runtime: 70.456 seconds
+

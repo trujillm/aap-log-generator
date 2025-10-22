@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aap-mock
+  namespace: aap-mock
+  labels:
+    app: aap-mock
+    app.kubernetes.io/name: aap-mock
+    app.kubernetes.io/part-of: aap-mock
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aap-mock
+  template:
+    metadata:
+      labels:
+        app: aap-mock
+        app.kubernetes.io/name: aap-mock
+        app.kubernetes.io/part-of: aap-mock
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        fsGroup: 0
+      containers:
+      - name: aap-mock
+        image: quay.io/example/aap-mock:latest  # Update this with your image
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        env:
+        - name: PORT
+          value: "8080"
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        - name: logs
+          mountPath: /var/log/aap-mock
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          runAsUser: 1001
+          capabilities:
+            drop:
+            - ALL
+          seccompProfile:
+            type: RuntimeDefault
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: aap-mock-data
+      - name: logs
+        persistentVolumeClaim:
+          claimName: aap-mock-logs
+      restartPolicy: Always
+
