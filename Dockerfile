@@ -15,9 +15,8 @@ RUN mkdir -p /data/uploads /data/generated /var/log/aap-mock && \
 # Switch back to non-root user
 USER 1001
 
-# Copy requirements and install dependencies
-COPY --chown=1001:0 requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies directly
+RUN pip install --no-cache-dir fastapi==0.104.1 uvicorn==0.24.0 python-multipart==0.0.6 requests==2.31.0
 
 # Copy application code
 COPY --chown=1001:0 main.py .
