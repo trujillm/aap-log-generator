@@ -1,0 +1,16 @@
+2024-01-15 10:30:00,123 INFO Job 789 execution started
+2024-01-15 10:30:01,456 INFO [web01.prod.company.com] Task 'Gathering Facts' started
+2024-01-15 10:30:02,789 INFO [web01.prod.company.com] Task 'Gathering Facts' completed successfully
+2024-01-15 10:30:03,012 INFO [web02.prod.company.com] Task 'Gathering Facts' started  
+2024-01-15 10:30:04,345 INFO [web02.prod.company.com] Task 'Gathering Facts' completed successfully
+2024-01-15 10:30:05,678 INFO [web01.prod.company.com] Task 'Install required packages' started
+2024-01-15 10:30:08,901 INFO [web01.prod.company.com] Package 'nginx' installed successfully
+2024-01-15 10:30:10,234 INFO [web01.prod.company.com] Package 'python3-pip' installed successfully
+2024-01-15 10:30:11,567 INFO [web02.prod.company.com] Task 'Install required packages' started
+2024-01-15 10:30:13,890 ERROR [web02.prod.company.com] Task 'Install required packages' failed: Package nginx not found
+2024-01-15 10:30:15,123 INFO [web01.prod.company.com] Task 'Start nginx service' started
+2024-01-15 10:30:16,456 INFO [web01.prod.company.com] Service nginx started and enabled
+2024-01-15 10:30:17,789 WARN [web02.prod.company.com] Task 'Start nginx service' skipped due to previous failure
+2024-01-15 10:30:18,012 INFO Job 789 execution completed with failures on 1 host
+
+

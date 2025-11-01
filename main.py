@@ -34,11 +34,12 @@ logger = logging.getLogger(__name__)
 DATA_DIR = Path("/data")
 UPLOADS_DIR = DATA_DIR / "uploads"
 GENERATED_DIR = DATA_DIR / "generated"
+AUTO_LOAD_DIR = Path("/app/sample-logs")  # New: auto-load directory
 OUTPUT_LOG_DIR = Path("/var/log/aap-mock")
 OUTPUT_LOG_FILE = OUTPUT_LOG_DIR / "output.log"
 
 # Ensure directories exist
-for dir_path in [UPLOADS_DIR, GENERATED_DIR, OUTPUT_LOG_DIR]:
+for dir_path in [UPLOADS_DIR, GENERATED_DIR, AUTO_LOAD_DIR, OUTPUT_LOG_DIR]:
     dir_path.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(
@@ -60,6 +61,9 @@ aap_job_events_db = {}  # job_id -> [events]
 aap_next_job_id = 1
 aap_next_event_id = 1
 
+# Auto-loaded files storage
+auto_loaded_files = {}  # filename -> file_path
+
 # Pydantic models
 class GenerateLogsRequest(BaseModel):
     job_id: str
@@ -70,7 +74,7 @@ class GenerateLogsRequest(BaseModel):
     events_per_minute: int = 60
 
 class ReplayRequest(BaseModel):
-    source: str  # "uploaded" or "generated"
+    source: str  # "uploaded", "generated", or "auto-loaded"
     id_or_path: str
     mode: str = "file"  # "file", "otlp", or "both"
     rate_lines_per_sec: int = 20
@@ -139,13 +143,80 @@ class AAPListResponse(BaseModel):
     previous: Optional[str] = None
     results: List[Dict[str, Any]]
 
+def auto_load_sample_logs():
+    """Auto-load log files from the sample-logs directory on startup"""
+    if not AUTO_LOAD_DIR.exists():
+        logger.info(f"Auto-load directory {AUTO_LOAD_DIR} does not exist, skipping auto-load")
+        return
+    
+    # Supported file extensions
+    supported_extensions = {'.log', '.txt'}
+    loaded_count = 0
+    
+    logger.info(f"🔍 Scanning {AUTO_LOAD_DIR} for log files to auto-load...")
+    
+    for file_path in AUTO_LOAD_DIR.iterdir():
+        if file_path.is_file() and file_path.suffix.lower() in supported_extensions:
+            try:
+                # Read file content
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+                
+                # Use filename without extension as the key
+                filename_key = file_path.stem
+                
+                # Store in auto-loaded files registry
+                auto_loaded_files[filename_key] = str(file_path)
+                
+                # Parse into AAP job format
+                job_id = create_aap_job_from_log(content, file_path.name)
+                
+                logger.info(f"✅ Auto-loaded: {file_path.name} → AAP job {job_id} (key: {filename_key})")
+                loaded_count += 1
+                
+            except Exception as e:
+                logger.warning(f"❌ Failed to auto-load {file_path.name}: {e}")
+    
+    if loaded_count > 0:
+        logger.info(f"🎉 Successfully auto-loaded {loaded_count} log files")
+        logger.info(f"📋 Available for replay: {list(auto_loaded_files.keys())}")
+    else:
+        logger.info("📂 No log files found in sample-logs directory")
+        logger.info(f"💡 Drop .log or .txt files in {AUTO_LOAD_DIR} to auto-load them!")
+
 # AAP log parsing functions
 def parse_aap_log_line(line: str, line_number: int) -> Optional[Dict[str, Any]]:
-    """Parse a single AAP log line into job event format"""
-    # Pattern: TIMESTAMP LEVEL [job_id:host] MESSAGE
-    # or: TIMESTAMP LEVEL [job_id] MESSAGE
+    """Parse a single AAP log line into job event format - supports multiple formats"""
+    line = line.strip()
+    if not line:
+        return None
+    
+    # Try multiple AAP log format patterns
+    parsers = [
+        _parse_structured_format,    # Our current format: TIMESTAMP LEVEL [job_id:host] MESSAGE  
+        _parse_json_format,          # AAP JSON event logs: {"event": "runner_on_start", ...}
+        _parse_ansible_output,       # Raw ansible output: "TASK [setup] ***", "ok: [host]"
+        _parse_aap_system_logs,      # AAP system logs: "2024-01-15 10:30:00 INFO Job started"
+        _parse_awx_logs             # AWX/Tower logs: various formats
+    ]
+    
+    for parser in parsers:
+        try:
+            result = parser(line, line_number)
+            if result:
+                return result
+        except Exception as e:
+            logger.debug(f"Parser {parser.__name__} failed for line {line_number}: {e}")
+            continue
+    
+    # If no parser worked, create a generic log entry
+    logger.debug(f"No parser matched line {line_number}: {line[:100]}...")
+    return _create_generic_entry(line, line_number)
+
+def _parse_structured_format(line: str, line_number: int) -> Optional[Dict[str, Any]]:
+    """Parse our current structured format: TIMESTAMP LEVEL [job_id:host] MESSAGE"""
     pattern = r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)\s+(\w+)\s+\[([^\]]+)\]\s+(.*)'
-    match = re.match(pattern, line.strip())
+    match = re.match(pattern, line)
     
     if not match:
         return None
@@ -224,6 +295,264 @@ def parse_aap_log_line(line: str, line_number: int) -> Optional[Dict[str, Any]]:
         "changed": changed,
         "line_number": line_number,
         "message": message
+    }
+
+def _parse_json_format(line: str, line_number: int) -> Optional[Dict[str, Any]]:
+    """Parse AAP JSON event logs: {"event": "runner_on_start", "counter": 1, ...}"""
+    try:
+        if not line.startswith('{'):
+            return None
+        
+        data = json.loads(line)
+        
+        # Extract job ID from various possible fields
+        job_id = data.get('job_id') or data.get('job') or 1
+        if isinstance(job_id, str) and job_id.startswith('job_'):
+            job_id = int(job_id.replace('job_', ''))
+        elif isinstance(job_id, str) and job_id.isdigit():
+            job_id = int(job_id)
+        elif not isinstance(job_id, int):
+            job_id = 1
+        
+        return {
+            "job_id": job_id,
+            "timestamp": data.get('created') or data.get('timestamp') or datetime.now(timezone.utc).isoformat(),
+            "event_type": data.get('event', 'runner_on_ok'),
+            "event_display": data.get('event_display') or data.get('stdout', ''),
+            "host": data.get('host') or data.get('host_name'),
+            "task": data.get('task'),
+            "stdout": data.get('stdout', ''),
+            "level": "ERROR" if data.get('failed') else "INFO",
+            "failed": data.get('failed', False),
+            "changed": data.get('changed', False),
+            "line_number": line_number,
+            "message": data.get('event_display') or str(data)
+        }
+    except (json.JSONDecodeError, KeyError, ValueError):
+        return None
+
+def _parse_ansible_output(line: str, line_number: int) -> Optional[Dict[str, Any]]:
+    """Parse raw ansible playbook output"""
+    
+    # PLAY header
+    if line.startswith('PLAY ['):
+        play_match = re.match(r'PLAY \[([^\]]+)\]', line)
+        play_name = play_match.group(1) if play_match else "Unknown Play"
+        return {
+            "job_id": 1,  # Default job ID
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "event_type": "playbook_on_play_start",
+            "event_display": f"PLAY [{play_name}]",
+            "host": None,
+            "task": None,
+            "stdout": line,
+            "level": "INFO",
+            "failed": False,
+            "changed": False,
+            "line_number": line_number,
+            "message": line
+        }
+    
+    # TASK header
+    elif line.startswith('TASK ['):
+        task_match = re.match(r'TASK \[([^\]]+)\]', line)
+        task_name = task_match.group(1) if task_match else "Unknown Task"
+        return {
+            "job_id": 1,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "event_type": "runner_on_start",
+            "event_display": f"TASK [{task_name}]",
+            "host": None,
+            "task": task_name,
+            "stdout": line,
+            "level": "INFO",
+            "failed": False,
+            "changed": False,
+            "line_number": line_number,
+            "message": line
+        }
+    
+    # Task results: ok: [host], changed: [host], failed: [host]
+    elif re.match(r'^(ok|changed|failed|fatal|unreachable|skipping):\s*\[([^\]]+)\]', line):
+        result_match = re.match(r'^(ok|changed|failed|fatal|unreachable|skipping):\s*\[([^\]]+)\](.*)', line)
+        if result_match:
+            status, host, extra = result_match.groups()
+            
+            event_type = "runner_on_ok"
+            if status in ["changed"]:
+                event_type = "runner_on_ok"
+                changed = True
+            elif status in ["failed", "fatal"]:
+                event_type = "runner_on_failed"
+                changed = False
+            elif status == "unreachable":
+                event_type = "runner_on_unreachable"
+                changed = False
+            elif status == "skipping":
+                event_type = "runner_on_skipped"
+                changed = False
+            else:
+                changed = False
+            
+            return {
+                "job_id": 1,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "event_type": event_type,
+                "event_display": line,
+                "host": host,
+                "task": None,
+                "stdout": extra.strip() if extra else "",
+                "level": "ERROR" if status in ["failed", "fatal"] else "INFO",
+                "failed": status in ["failed", "fatal"],
+                "changed": changed,
+                "line_number": line_number,
+                "message": line
+            }
+    
+    return None
+
+def _parse_aap_system_logs(line: str, line_number: int) -> Optional[Dict[str, Any]]:
+    """Parse AAP system logs: 2024-01-15 10:30:00 INFO Job 123 started"""
+    
+    # Pattern: YYYY-MM-DD HH:MM:SS LEVEL MESSAGE
+    pattern = r'(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})[,.]?\d*\s+(\w+)\s+(.*)'
+    match = re.match(pattern, line)
+    
+    if not match:
+        return None
+    
+    timestamp_str, level, message = match.groups()
+    
+    # Convert timestamp to ISO format
+    try:
+        dt = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S')
+        dt = dt.replace(tzinfo=timezone.utc)
+        timestamp = dt.isoformat()
+    except ValueError:
+        timestamp = datetime.now(timezone.utc).isoformat()
+    
+    # Extract job ID if present
+    job_id = 1
+    job_match = re.search(r'[Jj]ob\s+(\d+)', message)
+    if job_match:
+        job_id = int(job_match.group(1))
+    
+    # Extract host if present
+    host = None
+    host_patterns = [
+        r'\[([a-zA-Z0-9.-]+)\]',  # [hostname]
+        r'host[:\s]+([a-zA-Z0-9.-]+)',  # host: hostname
+        r'on\s+([a-zA-Z0-9.-]+)'  # on hostname
+    ]
+    for pattern in host_patterns:
+        host_match = re.search(pattern, message)
+        if host_match:
+            potential_host = host_match.group(1)
+            # Simple check if it looks like a hostname
+            if '.' in potential_host or len(potential_host) > 3:
+                host = potential_host
+                break
+    
+    # Determine event type
+    event_type = "runner_on_ok"
+    failed = level.upper() in ["ERROR", "FATAL", "CRITICAL"]
+    changed = "changed" in message.lower() or "updated" in message.lower()
+    
+    if "start" in message.lower():
+        event_type = "runner_on_start"
+    elif "complete" in message.lower() or "finish" in message.lower():
+        event_type = "runner_on_ok"
+    elif "fail" in message.lower() or "error" in message.lower():
+        event_type = "runner_on_failed"
+    
+    return {
+        "job_id": job_id,
+        "timestamp": timestamp,
+        "event_type": event_type,
+        "event_display": message,
+        "host": host,
+        "task": None,
+        "stdout": "",
+        "level": level.upper(),
+        "failed": failed,
+        "changed": changed,
+        "line_number": line_number,
+        "message": message
+    }
+
+def _parse_awx_logs(line: str, line_number: int) -> Optional[Dict[str, Any]]:
+    """Parse AWX/Tower specific log formats"""
+    
+    # AWX supervisor logs: Jan 15 10:30:00 tower-01 awx-manage[1234]: ...
+    syslog_pattern = r'(\w+\s+\d+\s+\d{2}:\d{2}:\d{2})\s+([^\s]+)\s+([^:]+):\s*(.*)'
+    match = re.match(syslog_pattern, line)
+    
+    if match:
+        timestamp_str, hostname, process, message = match.groups()
+        
+        # Convert syslog timestamp (add current year)
+        try:
+            current_year = datetime.now().year
+            dt = datetime.strptime(f"{current_year} {timestamp_str}", '%Y %b %d %H:%M:%S')
+            dt = dt.replace(tzinfo=timezone.utc)
+            timestamp = dt.isoformat()
+        except ValueError:
+            timestamp = datetime.now(timezone.utc).isoformat()
+        
+        # Extract job information
+        job_id = 1
+        job_match = re.search(r'[Jj]ob\s*[:#]?\s*(\d+)', message)
+        if job_match:
+            job_id = int(job_match.group(1))
+        
+        level = "INFO"
+        if any(word in message.upper() for word in ["ERROR", "FAIL", "FATAL"]):
+            level = "ERROR"
+        elif any(word in message.upper() for word in ["WARN", "WARNING"]):
+            level = "WARN"
+        
+        return {
+            "job_id": job_id,
+            "timestamp": timestamp,
+            "event_type": "runner_on_ok",
+            "event_display": message,
+            "host": hostname,
+            "task": None,
+            "stdout": "",
+            "level": level,
+            "failed": level == "ERROR",
+            "changed": False,
+            "line_number": line_number,
+            "message": message
+        }
+    
+    return None
+
+def _create_generic_entry(line: str, line_number: int) -> Dict[str, Any]:
+    """Create a generic log entry when no specific parser matches"""
+    
+    # Try to extract some basic information
+    level = "INFO"
+    if any(word in line.upper() for word in ["ERROR", "FAIL", "FATAL"]):
+        level = "ERROR"
+    elif any(word in line.upper() for word in ["WARN", "WARNING"]):
+        level = "WARN"
+    elif any(word in line.upper() for word in ["DEBUG"]):
+        level = "DEBUG"
+    
+    return {
+        "job_id": 1,  # Default job ID
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "event_type": "runner_on_ok",
+        "event_display": line,
+        "host": None,
+        "task": None,
+        "stdout": "",
+        "level": level,
+        "failed": level == "ERROR",
+        "changed": False,
+        "line_number": line_number,
+        "message": line
     }
 
 def create_aap_job_from_log(log_content: str, job_name: str) -> int:
@@ -539,6 +868,66 @@ def get_status() -> StatusResponse:
         current_job=replay_state["current_job"]
     )
 
+@app.get("/api/auto-loaded")
+def list_auto_loaded_files():
+    """List available auto-loaded log files"""
+    return {
+        "count": len(auto_loaded_files),
+        "files": [
+            {
+                "key": key,
+                "path": path,
+                "filename": Path(path).name
+            }
+            for key, path in auto_loaded_files.items()
+        ]
+    }
+
+@app.post("/api/auto-loaded/refresh")
+def refresh_auto_loaded_files():
+    """Re-scan sample-logs directory and refresh auto-loaded files"""
+    logger.info("🔄 Manual refresh of auto-loaded files requested")
+    
+    # Store previous state for comparison
+    previous_files = set(auto_loaded_files.keys())
+    previous_count = len(auto_loaded_files)
+    
+    # Clear current auto-loaded files
+    auto_loaded_files.clear()
+    
+    # Re-run the auto-load process
+    auto_load_sample_logs()
+    
+    # Calculate changes
+    current_files = set(auto_loaded_files.keys())
+    added_files = current_files - previous_files
+    removed_files = previous_files - current_files
+    current_count = len(auto_loaded_files)
+    
+    logger.info(f"📊 Refresh completed: {previous_count} → {current_count} files")
+    if added_files:
+        logger.info(f"➕ Added: {list(added_files)}")
+    if removed_files:
+        logger.info(f"➖ Removed: {list(removed_files)}")
+    
+    return {
+        "status": "refreshed",
+        "previous_count": previous_count,
+        "current_count": current_count,
+        "changes": {
+            "added": list(added_files),
+            "removed": list(removed_files)
+        },
+        "files": [
+            {
+                "key": key,
+                "path": path,
+                "filename": Path(path).name
+            }
+            for key, path in auto_loaded_files.items()
+        ]
+    }
+
 @app.post("/api/logs/upload")
 async def upload_log(file: UploadFile = File(...)) -> UploadResponse:
     """Upload a log file for later replay and create AAP job"""
@@ -609,9 +998,23 @@ def start_replay(request: ReplayRequest, background_tasks: BackgroundTasks):
     if replay_state["active"]:
         raise HTTPException(status_code=409, detail="Replay already active")
     
+    # Set up replay state early (needed for "all" functionality)
+    stop_event = threading.Event()
+    replay_state["active"] = True
+    replay_state["stop_event"] = stop_event
+    
     # Find source file
     if request.source == "uploaded":
-        source_path = UPLOADS_DIR / f"{request.id_or_path}.log"
+        if request.id_or_path == "latest":
+            # Find the most recently uploaded file
+            uploaded_files = list(UPLOADS_DIR.glob("*.log"))
+            if not uploaded_files:
+                replay_state["active"] = False  # Reset state on error
+                raise HTTPException(status_code=404, detail="No uploaded files found")
+            source_path = max(uploaded_files, key=lambda p: p.stat().st_mtime)
+            logger.info(f"Using latest uploaded file: {source_path.name}")
+        else:
+            source_path = UPLOADS_DIR / f"{request.id_or_path}.log"
     elif request.source == "generated":
         if request.id_or_path.endswith('.jsonl'):
             source_path = GENERATED_DIR / request.id_or_path
@@ -619,18 +1022,56 @@ def start_replay(request: ReplayRequest, background_tasks: BackgroundTasks):
             # Find generated file by job_id pattern
             candidates = list(GENERATED_DIR.glob(f"{request.id_or_path}_*.jsonl"))
             if not candidates:
+                replay_state["active"] = False  # Reset state on error
                 raise HTTPException(status_code=404, detail="Generated log file not found")
             source_path = max(candidates, key=lambda p: p.stat().st_mtime)  # Most recent
+    elif request.source == "auto-loaded":
+        if request.id_or_path == "all":
+            # Special case: replay all auto-loaded files sequentially
+            if not auto_loaded_files:
+                replay_state["active"] = False  # Reset state on error
+                raise HTTPException(status_code=404, detail="No auto-loaded files found")
+            
+            # Set up current job info for "all" replay
+            replay_state["current_job"] = {
+                "source": request.source,
+                "path": "all_auto_loaded_files",
+                "mode": request.mode,
+                "rate": request.rate_lines_per_sec,
+                "loop": request.loop,
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "files_count": len(auto_loaded_files),
+                "files": list(auto_loaded_files.keys())
+            }
+            
+            # Start background task to replay all files
+            background_tasks.add_task(_replay_all_auto_loaded, request, stop_event)
+            
+            return {
+                "status": "started", 
+                "source_path": "all_auto_loaded_files",
+                "files_count": len(auto_loaded_files),
+                "files": list(auto_loaded_files.keys())
+            }
+        else:
+            # Look up auto-loaded file by filename key
+            if request.id_or_path not in auto_loaded_files:
+                available_files = list(auto_loaded_files.keys())
+                replay_state["active"] = False  # Reset state on error
+                raise HTTPException(
+                    status_code=404, 
+                    detail=f"Auto-loaded file '{request.id_or_path}' not found. Available files: {available_files}"
+                )
+            source_path = Path(auto_loaded_files[request.id_or_path])
     else:
-        raise HTTPException(status_code=400, detail="Source must be 'uploaded' or 'generated'")
+        replay_state["active"] = False  # Reset state on error
+        raise HTTPException(status_code=400, detail="Source must be 'uploaded', 'generated', or 'auto-loaded'")
     
     if not source_path.exists():
+        replay_state["active"] = False  # Reset state on error
         raise HTTPException(status_code=404, detail="Log file not found")
     
-    # Set up replay state
-    stop_event = threading.Event()
-    replay_state["active"] = True
-    replay_state["stop_event"] = stop_event
+    # Set up current job info
     replay_state["current_job"] = {
         "source": request.source,
         "path": str(source_path),
@@ -742,7 +1183,7 @@ def _replay_logs(source_path: Path, request: ReplayRequest, stop_event: threadin
                         logger.info("Replay stopped by user")
                         return
                     
-                    line = line.strip()
+                    line = line.rstrip('\n\r')  # Only remove newlines, preserve spaces!
                     if not line:
                         continue
                     
@@ -776,10 +1217,80 @@ def _replay_logs(source_path: Path, request: ReplayRequest, stop_event: threadin
         logger.info("Replay completed")
 
 def _write_to_output_file(line: str):
-    """Write log line to output file"""
-    timestamp = datetime.now(timezone.utc).isoformat()
+    """Write log line to output file - normalize to structured AAP format like real AAP"""
+    # Convert any format to structured AAP format for log aggregation
+    structured_line = _normalize_to_structured_aap_format(line)
     with open(OUTPUT_LOG_FILE, "a") as f:
-        f.write(f"{timestamp} {line}\n")
+        f.write(f"{structured_line}\n")
+
+def _normalize_to_structured_aap_format(line: str) -> str:
+    """Convert any log format to structured AAP format for external log aggregation"""
+    # If already in structured format, return as-is
+    if re.match(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.*?INFO|ERROR|WARN|DEBUG.*?\[.*?\]', line):
+        return line
+    
+    # Get current timestamp in AAP format
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    
+    # Determine log level and job context
+    level = "INFO"
+    job_context = "[aap_mock]"
+    
+    if any(keyword in line.lower() for keyword in ["error", "failed", "fatal"]):
+        level = "ERROR"
+    elif any(keyword in line.lower() for keyword in ["warn", "warning"]):
+        level = "WARN"
+    
+    # For raw Ansible output, preserve the content but structure it
+    if line.startswith(("PLAY [", "TASK [", "HANDLER [")):
+        return f"{timestamp} {level} {job_context} {line}"
+    elif line.startswith(("ok:", "changed:", "failed:", "skipping:")):
+        return f"{timestamp} {level} {job_context} {line}"
+    elif line.startswith("[WARNING]"):
+        return f"{timestamp} WARN {job_context} {line}"
+    else:
+        # Generic structured format
+        return f"{timestamp} {level} {job_context} {line}"
+
+def _replay_all_auto_loaded(request: ReplayRequest, stop_event: threading.Event):
+    """Replay all auto-loaded files sequentially"""
+    try:
+        files_to_replay = list(auto_loaded_files.items())
+        total_files = len(files_to_replay)
+        
+        logger.info(f"Starting replay of all {total_files} auto-loaded files")
+        
+        for file_index, (file_key, file_path) in enumerate(files_to_replay, 1):
+            if stop_event.is_set():
+                logger.info("Replay all stopped by user")
+                return
+                
+            logger.info(f"Replaying file {file_index}/{total_files}: {file_key}")
+            
+            # Update current job info to show progress
+            if replay_state["current_job"]:
+                replay_state["current_job"]["current_file"] = file_key
+                replay_state["current_job"]["progress"] = f"{file_index}/{total_files}"
+            
+            # Replay this specific file
+            source_path = Path(file_path)
+            _replay_logs(source_path, request, stop_event)
+            
+            if stop_event.is_set():
+                logger.info("Replay all stopped by user")
+                return
+                
+            # Small delay between files
+            time.sleep(0.5)
+            
+        logger.info(f"Completed replay of all {total_files} auto-loaded files")
+        
+    except Exception as e:
+        logger.error(f"Error during replay all: {e}")
+    finally:
+        replay_state["active"] = False
+        replay_state["current_job"] = None
+        logger.info("Replay all completed")
 
 def _send_to_otlp(line: str, endpoint: str):
     """Send log line to OTLP endpoint"""
@@ -816,6 +1327,9 @@ def _send_to_otlp(line: str, endpoint: str):
         logger.warning(f"Failed to send to OTLP: {e}")
 
 if __name__ == "__main__":
+    # Auto-load sample log files on startup
+    auto_load_sample_logs()
+    
     port = int(os.getenv("PORT", 8080))
     uvicorn.run(app, host="0.0.0.0", port=port)
 

@@ -22,6 +22,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY --chown=1001:0 main.py .
 
+# Copy sample logs directory
+COPY --chown=1001:0 sample-logs/ ./sample-logs/
+
 # Expose port
 EXPOSE 8080
 

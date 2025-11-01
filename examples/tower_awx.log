@@ -1,0 +1,11 @@
+Jan 15 10:30:00 tower-controller-01 awx-manage[12345]: Job 321 launched by user admin
+Jan 15 10:30:01 tower-controller-01 supervisor[23456]: ansible-playbook process started for job 321
+Jan 15 10:30:02 tower-controller-01 awx-task[34567]: Job 321 inventory refresh started
+Jan 15 10:30:05 tower-controller-01 awx-task[34567]: Job 321 executing on web01.prod.company.com
+Jan 15 10:30:08 tower-controller-01 awx-task[34567]: Job 321 task 'Setup environment' completed on web01.prod.company.com
+Jan 15 10:30:10 tower-controller-01 awx-task[34567]: Job 321 executing on web02.prod.company.com  
+Jan 15 10:30:12 tower-controller-01 awx-task[34567]: Job 321 task 'Install packages' failed on web02.prod.company.com
+Jan 15 10:30:15 tower-controller-01 awx-manage[12345]: Job 321 finished with status: failed
+Jan 15 10:30:16 tower-controller-01 supervisor[23456]: ansible-playbook process ended for job 321
+
+

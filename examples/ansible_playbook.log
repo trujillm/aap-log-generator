@@ -1,0 +1,29 @@
+PLAY [Deploy Web Application] *************************************************
+
+TASK [Gathering Facts] *********************************************************
+ok: [web01.prod.company.com]
+ok: [web02.prod.company.com]
+
+TASK [Install required packages] **********************************************
+changed: [web01.prod.company.com] => (item=nginx)
+changed: [web01.prod.company.com] => (item=python3-pip)
+failed: [web02.prod.company.com] (item=nginx) => {"ansible_loop_var": "item", "changed": false, "failed": true, "item": "nginx", "msg": "No package matching 'nginx' found available, installed or updated", "rc": 126}
+changed: [web02.prod.company.com] => (item=python3-pip)
+
+TASK [Start nginx service] ****************************************************
+skipping: [web02.prod.company.com]
+changed: [web01.prod.company.com]
+
+TASK [Deploy application code] ************************************************
+changed: [web01.prod.company.com]
+skipping: [web02.prod.company.com]
+
+TASK [Configure firewall] *****************************************************
+ok: [web01.prod.company.com]
+ok: [web02.prod.company.com]
+
+PLAY RECAP *********************************************************************
+web01.prod.company.com     : ok=5    changed=3    unreachable=0    failed=0   
+web02.prod.company.com     : ok=2    changed=1    unreachable=0    failed=1   
+
+
