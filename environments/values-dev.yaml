@@ -1,0 +1,48 @@
+# Development environment values for AAP Mock Service
+# Usage: helm upgrade --install aap-mock-dev ./chart/aap-mock --namespace development --create-namespace --values values-dev.yaml
+
+replicaCount: 1
+
+image:
+  repository: quay.io/matrujil/aap-mock
+  tag: latest
+  pullPolicy: Always
+
+# Lightweight resources for development
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+
+# Smaller storage for development
+persistence:
+  data:
+    enabled: true
+    size: 1Gi
+  logs:
+    enabled: true
+    size: 500Mi
+
+# Enable route for easy access
+route:
+  enabled: true
+  tls: {}  # No TLS for dev simplicity
+
+# Development-specific environment variables
+app:
+  env:
+    LOG_LEVEL: "DEBUG"
+
+# Development probes - faster for iteration
+probes:
+  liveness:
+    enabled: true
+    initialDelaySeconds: 15
+    periodSeconds: 10
+  readiness:
+    enabled: true
+    initialDelaySeconds: 5
+    periodSeconds: 5

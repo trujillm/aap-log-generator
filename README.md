@@ -41,6 +41,7 @@ A **production-ready AAP API mock** that provides 100% compatible **Ansible Auto
 - **📤 Upload Real AAP Logs**: **Multi-format support** - automatically detects and parses various AAP log formats
 - **🎭 Generate Synthetic Jobs**: Create realistic AAP job data for testing
 - **⚡ Log Replay**: Stream logs to files for Grafana Alloy/Promtail tailing
+- **🔄 Multi-File Replay**: Replay all uploaded files or all auto-loaded files with `"id_or_path": "all"`
 - **🌐 OTLP Support**: Direct ingestion to observability platforms
 
 ### **Supported AAP Log Formats** 📋
@@ -184,22 +185,188 @@ HOST=$(oc get route aap-mock -o jsonpath='{.spec.host}')
 curl -s https://$HOST/healthz
 ```
 
-### Deploy on OpenShift (Helm)
+### Deploy on OpenShift (Helm) 🎯
 
-1. **Deploy with Helm**:
+**Recommended deployment method** - One command installs everything with full configurability.
+
+#### **🚀 Quick Start - Any Namespace**
+
+Deploy to **any namespace** you want (creates namespace if it doesn't exist):
+
 ```bash
-helm upgrade -i aap-mock ./chart/aap-mock \
-  --namespace aap-mock --create-namespace \
-  --set image.repository=quay.io/<your-org>/aap-mock \
-  --set image.tag=latest \
-  --set route.enabled=true
+# Deploy to default 'aap-mock' namespace
+helm upgrade --install aap-mock ./chart/aap-mock \
+  --namespace aap-mock --create-namespace
+
+# Deploy to your custom namespace  
+helm upgrade --install my-aap-service ./chart/aap-mock \
+  --namespace my-team-tools --create-namespace
+
+# Deploy to existing namespace
+helm upgrade --install aap-mock-dev ./chart/aap-mock \
+  --namespace development
 ```
 
-2. **Verify deployment**:
+#### **⚙️ Configuration Options**
+
+**Essential configurations for different environments:**
+
 ```bash
-oc get pods -n aap-mock
+# Production deployment with custom settings
+helm upgrade --install aap-mock-prod ./chart/aap-mock \
+  --namespace production --create-namespace \
+  --set image.repository=quay.io/your-org/aap-mock \
+  --set image.tag=v1.2.0 \
+  --set replicaCount=3 \
+  --set resources.limits.memory=1Gi \
+  --set persistence.data.size=10Gi \
+  --set persistence.logs.size=5Gi \
+  --set route.enabled=true
+
+# Development deployment (lightweight)  
+helm upgrade --install aap-mock-dev ./chart/aap-mock \
+  --namespace dev-team --create-namespace \
+  --set resources.limits.memory=256Mi \
+  --set persistence.data.size=1Gi \
+  --set persistence.logs.size=500Mi
+
+# With custom environment variables
+helm upgrade --install aap-mock ./chart/aap-mock \
+  --namespace aap-mock --create-namespace \
+  --set app.env.OTLP_ENDPOINT="http://otel-collector:4318/v1/logs" \
+  --set app.env.LOG_LEVEL="DEBUG"
+```
+
+#### **📋 Common Configuration Values**
+
+| **Parameter** | **Description** | **Default** | **Example** |
+|---------------|-----------------|-------------|-------------|
+| `image.repository` | Container image repository | `quay.io/matrujil/aap-mock` | `quay.io/your-org/aap-mock` |
+| `image.tag` | Image tag to deploy | `x86_64` | `latest`, `v1.0.0` |
+| `replicaCount` | Number of replicas | `1` | `3` (production) |
+| `persistence.data.size` | Upload storage size | `2Gi` | `10Gi` (production) |
+| `persistence.logs.size` | Output log storage size | `1Gi` | `5Gi` (production) |
+| `resources.limits.memory` | Memory limit | `512Mi` | `1Gi`, `2Gi` |
+| `route.enabled` | Create OpenShift Route | `true` | `false` (use ingress) |
+| `app.env.*` | Environment variables | `{}` | Custom config |
+
+#### **🔍 Verification & Access**
+
+**Check deployment status:**
+```bash
+# Check all resources in your namespace
+helm status aap-mock -n aap-mock
+oc get all,pvc -n aap-mock
+
+# Get service URL
 HOST=$(oc get route aap-mock -n aap-mock -o jsonpath='{.spec.host}')
-curl -s https://$HOST/healthz
+echo "Service URL: http://$HOST"
+
+# Test health
+curl -s "http://$HOST/healthz"
+curl -s "http://$HOST/api/status" | jq '.'
+```
+
+#### **📂 Namespace Management**
+
+**Multiple environments in separate namespaces:**
+
+```bash
+# Development environment
+helm upgrade --install aap-mock-dev ./chart/aap-mock \
+  --namespace development --create-namespace \
+  --values environments/values-dev.yaml
+
+# Staging environment  
+helm upgrade --install aap-mock-staging ./chart/aap-mock \
+  --namespace staging --create-namespace \
+  --values environments/values-staging.yaml
+
+# Production environment
+helm upgrade --install aap-mock-prod ./chart/aap-mock \
+  --namespace production --create-namespace \
+  --values environments/values-prod.yaml
+```
+
+**List deployments across namespaces:**
+```bash
+helm list --all-namespaces | grep aap-mock
+```
+
+#### **🔧 Advanced Configuration**
+
+**Use the provided environment-specific values files:**
+
+```bash
+# Ready-to-use values files are provided in environments/
+ls environments/
+# README.md  values-dev.yaml  values-prod.yaml
+
+# Development deployment (lightweight)
+helm upgrade --install aap-mock-dev ./chart/aap-mock \
+  --namespace development --create-namespace \
+  --values environments/values-dev.yaml
+
+# Production deployment (HA + security)  
+helm upgrade --install aap-mock-prod ./chart/aap-mock \
+  --namespace production --create-namespace \
+  --values environments/values-prod.yaml
+
+# Create custom environment (e.g., staging)
+cp environments/values-prod.yaml environments/values-staging.yaml
+# Edit environments/values-staging.yaml as needed
+helm upgrade --install aap-mock-staging ./chart/aap-mock \
+  --namespace staging --create-namespace \
+  --values environments/values-staging.yaml
+```
+
+**📖 See `environments/README.md` for detailed configuration options and best practices.**
+
+#### **🚨 Troubleshooting Helm Deployments**
+
+**Common issues and solutions:**
+
+```bash
+# Check Helm deployment status
+helm status aap-mock -n aap-mock
+
+# View recent Helm history
+helm history aap-mock -n aap-mock
+
+# Debug failed deployments
+oc get events -n aap-mock --sort-by=.metadata.creationTimestamp
+oc describe pod -l app.kubernetes.io/name=aap-mock -n aap-mock
+
+# Pod won't start (security context)
+# Solution: Let OpenShift assign user IDs automatically (already configured)
+
+# PVC issues
+oc get pvc -n aap-mock
+oc describe pvc aap-mock-data -n aap-mock
+
+# Image pull issues  
+oc describe pod <pod-name> -n aap-mock
+# Check image repository and tag in values
+
+# Route not accessible
+oc get route aap-mock -n aap-mock
+# Check if route is created and service is running
+```
+
+#### **🗑️ Cleanup**
+
+**Remove deployment:**
+```bash
+# Remove from specific namespace
+helm uninstall aap-mock -n aap-mock
+
+# Remove multiple environments
+helm uninstall aap-mock-dev -n development  
+helm uninstall aap-mock-staging -n staging
+helm uninstall aap-mock-prod -n production
+
+# Verify cleanup
+oc get all,pvc -n aap-mock
 ```
 
 ## Usage Examples
@@ -228,7 +395,7 @@ The `./sample-logs/` directory is a **special folder** where you can **drop log 
 | ✅ **Reproducible testing** scenarios | ✅ **Dynamic log generation** from CI/CD |
 | ✅ **Long-term development** | ✅ **External systems** uploading logs |
 | ✅ Want **simple names** for replay | ✅ Need **temporary** log processing |
-| ✅ **OpenShift ConfigMaps/PVs** | ✅ **Runtime file uploads** |
+| ✅ **OpenShift `oc cp` file additions** | ✅ **Runtime file uploads** |
 
 ### **🔄 Runtime File Refresh**
 
@@ -397,7 +564,7 @@ curl -X POST https://$HOST/api/logs/replay \
   }'
 
 # Check streamed logs
-POD=$(oc get pods -l app=aap-mock -n aap-mock -o name | head -n1)
+POD=$(oc get pods -l app.kubernetes.io/name=aap-mock -n aap-mock -o name | head -n1)
 oc rsh $POD tail -f /var/log/aap-mock/output.log
 ```
 
@@ -431,23 +598,29 @@ curl -X POST https://$HOST/api/replay/stop
 
 The refresh endpoint makes it easy to add log files in OpenShift without pod restarts:
 
-#### **Method 1: ConfigMap Updates**
+#### **Method 1: Direct File Copy (Easiest)**
 ```bash
-# Create/update ConfigMap with log files
+# Copy files directly into running pod (recommended)
+POD=$(oc get pods -l app.kubernetes.io/name=aap-mock -o name | head -n1)
+
+# Copy single files
+oc cp your-log-file.log $POD:/app/sample-logs/
+oc cp examples/demo-job-failed.log $POD:/app/sample-logs/
+
+# OR copy entire directory
+oc cp examples/ $POD:/app/sample-logs/
+
+# Refresh to detect new files
+curl -X POST https://your-aap-mock-route/api/auto-loaded/refresh
+```
+
+#### **Method 2: ConfigMap Updates (Advanced)**
+```bash
+# Create/update ConfigMap with log files  
 oc create configmap aap-logs --from-file=sample-logs/ --dry-run=client -o yaml | oc apply -f -
 
 # Refresh the application (no restart needed!)
 curl -X POST https://your-aap-mock-route/api/auto-loaded/refresh
-```
-
-#### **Method 2: PersistentVolume File Copy**
-```bash
-# Copy files into mounted PV
-POD=$(oc get pods -l app=aap-mock -o name | head -n1)
-oc cp local-log.log $POD:/app/sample-logs/
-
-# Refresh to detect new files
-oc exec $POD -- curl -X POST http://localhost:8080/api/auto-loaded/refresh
 ```
 
 #### **Method 3: InitContainer Loading**
@@ -491,23 +664,23 @@ spec:
 
 ### **OpenShift Deployment Examples**
 
-#### **With ConfigMap Auto-loading**
+#### **Standard Deployment (Recommended)**  
 ```bash
-# Create ConfigMap from sample-logs directory
-oc create configmap aap-sample-logs --from-file=sample-logs/
-
-# Deploy with ConfigMap mounted
-helm upgrade -i aap-mock ./chart/aap-mock \
-  --set configMap.enabled=true \
-  --set configMap.name=aap-sample-logs
-```
-
-#### **With PersistentVolume**  
-```bash
-# Deploy with PV for dynamic file additions
+# Deploy with PV for easy file additions
 helm upgrade -i aap-mock ./chart/aap-mock \
   --set persistence.enabled=true \
   --set persistence.size=1Gi
+
+# Then easily add files anytime:
+POD=$(oc get pods -l app.kubernetes.io/name=aap-mock -o name | head -n1) 
+
+# Copy single file
+oc cp your-log.log $POD:/app/sample-logs/
+
+# Copy entire directory 
+oc cp examples/ $POD:/app/sample-logs/
+
+curl -X POST https://your-route/api/auto-loaded/refresh
 ```
 
 ## Configuration
@@ -521,70 +694,61 @@ helm upgrade -i aap-mock ./chart/aap-mock \
 
 ### Helm Configuration
 
-Key configuration options in `values.yaml`:
+**📖 For detailed Helm configuration, see the comprehensive [Deploy on OpenShift (Helm)](#deploy-on-openshift-helm-) section above.**
 
-```yaml
-image:
-  repository: quay.io/your-org/aap-mock
-  tag: latest
+**Quick reference - key values.yaml options:**
 
-persistence:
-  data:
-    size: 2Gi
-  logs:
-    size: 1Gi
-
-resources:
-  requests:
-    cpu: 100m
-    memory: 128Mi
-  limits:
-    cpu: 500m
-    memory: 512Mi
-
-route:
-  enabled: true  # For OpenShift
-  
-# Or use ingress for standard Kubernetes
-ingress:
-  enabled: false
-  hosts:
-    - host: aap-mock.your-domain.com
-```
+- `image.repository` / `image.tag` - Container image to deploy
+- `persistence.data.size` / `persistence.logs.size` - Storage sizes  
+- `resources.limits.memory` - Memory allocation
+- `route.enabled` - OpenShift Route creation
+- `app.env.*` - Custom environment variables
+- **Namespace**: Managed via `helm --namespace <name> --create-namespace`
 
 ## File Structure
 
 ```
 /
 ├── main.py                    # FastAPI application with multi-format parsing
-├── requirements.txt           # Python dependencies
-├── Dockerfile                 # Container build
-├── README.md                  # This file
-├── sample_aap.log            # Sample structured format log
+├── Dockerfile                 # Container build configuration  
+├── README.md                  # Complete documentation
+├── run-local.sh              # Local development script
+├── sample-logs/              # Auto-loaded log files (empty by default)
 ├── examples/                 # Real AAP log format examples
 │   ├── aap_job_events.json    # AAP JSON event format
 │   ├── ansible_playbook.log   # Raw ansible-playbook output
 │   ├── aap_system.log         # AAP controller/system logs
-│   └── tower_awx.log          # AWX/Tower service logs
-├── openshift/                # OpenShift manifests
+│   ├── tower_awx.log          # AWX/Tower service logs
+│   ├── demo-job-complex.log   # Complex multi-task AAP job
+│   └── demo-job-failed.log    # Failed job example
+├── environments/             # Environment-specific Helm values
+│   ├── README.md              # Environment deployment guide
+│   ├── values-dev.yaml        # Development configuration
+│   └── values-prod.yaml       # Production configuration
+├── openshift/                # OpenShift manifests (for manual deployment)
 │   ├── namespace.yaml
 │   ├── pvc.yaml
 │   ├── deployment.yaml
 │   ├── service.yaml
 │   ├── route.yaml
 │   └── kustomization.yaml
-└── chart/aap-mock/          # Helm chart
-    ├── Chart.yaml
-    ├── values.yaml
-    └── templates/
-        ├── deployment.yaml
-        ├── service.yaml
-        ├── pvc.yaml
-        ├── route.yaml
-        ├── ingress.yaml
-        ├── serviceaccount.yaml
-        ├── hpa.yaml
-        └── _helpers.tpl
+├── chart/aap-mock/          # Helm chart (recommended deployment)
+│   ├── Chart.yaml
+│   ├── values.yaml
+│   └── templates/
+│       ├── deployment.yaml
+│       ├── service.yaml
+│       ├── pvc.yaml
+│       ├── route.yaml
+│       ├── ingress.yaml
+│       ├── serviceaccount.yaml
+│       ├── hpa.yaml
+│       └── _helpers.tpl
+├── data/                    # Runtime directories (created by container)
+│   ├── uploads/              # API uploaded files
+│   └── generated/            # Generated mock logs  
+└── logs/                    # Output logs directory
+    └── output.log            # Structured AAP format output
 ```
 
 ## Storage
@@ -736,6 +900,7 @@ curl -X POST http://localhost:8080/api/logs/replay \
 | Value | Source | Description | Example |
 |-------|--------|-------------|---------|
 | `"all"` | `auto-loaded` | Replay all auto-loaded files sequentially | `"id_or_path": "all"` |
+| `"all"` | `uploaded` | Replay all uploaded files sequentially | `"id_or_path": "all"` |
 | `"latest"` | `uploaded` | Most recently uploaded file | `"id_or_path": "latest"` |
 | `UUID` | `uploaded` | Specific uploaded file | `"id_or_path": "dcef653c-c73e-4c2e..."` |
 | `filename` | `auto-loaded` | File from sample-logs directory | `"id_or_path": "my-job"` |
@@ -755,6 +920,26 @@ curl -X POST http://localhost:8080/api/logs/replay \
   }'
 ```
 ✨ **Perfect for comprehensive testing!** Replays all files in `sample-logs/` directory sequentially.
+
+#### Replay All Uploaded Files (Multi-File Upload Testing)
+```bash
+# First upload multiple files
+curl -F "file=@job1.log" http://localhost:8080/api/logs/upload
+curl -F "file=@job2.log" http://localhost:8080/api/logs/upload
+curl -F "file=@job3.log" http://localhost:8080/api/logs/upload
+
+# Then replay all uploaded files sequentially with looping
+curl -X POST http://localhost:8080/api/logs/replay \
+  -H 'content-type: application/json' \
+  -d '{
+    "source": "uploaded",
+    "id_or_path": "all",
+    "mode": "file",
+    "rate_lines_per_sec": 30,
+    "loop": true
+  }'
+```
+🎯 **Great for testing file upload workflows!** Cycles through all uploaded files continuously.
 
 #### Slow Replay with Looping (Latest Upload)
 ```bash
@@ -929,7 +1114,7 @@ oc get pvc -n aap-mock
 
 ### Access Pod Shell
 ```bash
-POD=$(oc get pods -l app=aap-mock -n aap-mock -o name | head -n1)
+POD=$(oc get pods -l app.kubernetes.io/name=aap-mock -n aap-mock -o name | head -n1)
 oc rsh $POD
 ```
 

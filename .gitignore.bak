@@ -100,8 +100,7 @@ secrets/
 *.key
 *.crt
 *.pem
-
 # Environment-specific values files (may contain secrets)
-environments/values-*.yaml
-!environments/values-dev.yaml
-!environments/values-prod.yaml
+values-*.yaml
+!values-dev.yaml
+!values-prod.yaml

@@ -1,0 +1,77 @@
+# Production environment values for AAP Mock Service  
+# Usage: helm upgrade --install aap-mock-prod ./chart/aap-mock --namespace production --create-namespace --values values-prod.yaml
+
+replicaCount: 3
+
+image:
+  repository: quay.io/your-org/aap-mock  # Update with your production image
+  tag: v1.0.0  # Use specific version tags in production
+  pullPolicy: IfNotPresent
+
+# Production-grade resources
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+
+# Larger storage for production workloads
+persistence:
+  data:
+    enabled: true
+    size: 20Gi
+    storageClass: ""  # Use default fast storage
+  logs:
+    enabled: true
+    size: 10Gi
+
+# Secure route with TLS termination
+route:
+  enabled: true
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+
+# Production environment variables
+app:
+  env:
+    LOG_LEVEL: "INFO"
+    OTLP_ENDPOINT: "http://otel-collector.monitoring:4318/v1/logs"
+
+# Production-ready probes
+probes:
+  liveness:
+    enabled: true
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readiness:
+    enabled: true
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+# Spread pods across nodes for HA
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+    - weight: 100
+      podAffinityTerm:
+        labelSelector:
+          matchExpressions:
+          - key: app.kubernetes.io/name
+            operator: In
+            values:
+            - aap-mock
+        topologyKey: kubernetes.io/hostname
+
+# Tolerate production node taints if needed
+tolerations: []
+  # - key: "production"
+  #   operator: "Equal"
+  #   value: "true"
+  #   effect: "NoSchedule"

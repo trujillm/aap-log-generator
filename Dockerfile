@@ -8,9 +8,9 @@ USER 0
 
 # Install curl for health checks
 RUN yum update -y && yum install -y curl && yum clean all
-RUN mkdir -p /data/uploads /data/generated /var/log/aap-mock && \
-    chown -R 1001:0 /data /var/log/aap-mock && \
-    chmod -R g=u /data /var/log/aap-mock
+RUN mkdir -p /data/uploads /data/generated /var/log/aap-mock /app/sample-logs && \
+    chown -R 1001:0 /data /var/log/aap-mock /app/sample-logs && \
+    chmod -R g=u /data /var/log/aap-mock /app/sample-logs
 
 # Switch back to non-root user
 USER 1001
@@ -21,7 +21,7 @@ RUN pip install --no-cache-dir fastapi==0.104.1 uvicorn==0.24.0 python-multipart
 # Copy application code
 COPY --chown=1001:0 main.py .
 
-# Copy sample logs directory
+# Copy sample logs directory (permissions set above as root)
 COPY --chown=1001:0 sample-logs/ ./sample-logs/
 
 # Expose port

@@ -48,12 +48,15 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Global replay state
+# Global replay state and stop mechanism
 replay_state = {
     "active": False,
     "stop_event": None,
     "current_job": None
 }
+
+# CRITICAL FIX: Global stop flag that persists even when state gets corrupted
+global_stop_flag = threading.Event()  # This persists across state resets
 
 # AAP-compatible job storage
 aap_jobs_db = {}  # job_id -> job_data
@@ -152,15 +155,36 @@ def auto_load_sample_logs():
     # Supported file extensions
     supported_extensions = {'.log', '.txt'}
     loaded_count = 0
+    skipped_count = 0
     
     logger.info(f"🔍 Scanning {AUTO_LOAD_DIR} for log files to auto-load...")
     
     for file_path in AUTO_LOAD_DIR.iterdir():
         if file_path.is_file() and file_path.suffix.lower() in supported_extensions:
             try:
+                # Check file size first
+                file_size = file_path.stat().st_size
+                if file_size == 0:
+                    logger.warning(f"⚠️  Skipping empty file: {file_path.name} (0 bytes)")
+                    skipped_count += 1
+                    continue
+                
                 # Read file content
                 with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                     content = f.read()
+                
+                # Check for meaningful content (not just whitespace)
+                if not content.strip():
+                    logger.warning(f"⚠️  Skipping file with only whitespace: {file_path.name}")
+                    skipped_count += 1
+                    continue
+                
+                # Count actual lines with content
+                lines = [line.strip() for line in content.split('\n') if line.strip()]
+                if len(lines) == 0:
+                    logger.warning(f"⚠️  Skipping file with no content lines: {file_path.name}")
+                    skipped_count += 1
+                    continue
                 
                 # Use filename without extension as the key
                 filename_key = file_path.stem
@@ -171,17 +195,24 @@ def auto_load_sample_logs():
                 # Parse into AAP job format
                 job_id = create_aap_job_from_log(content, file_path.name)
                 
-                logger.info(f"✅ Auto-loaded: {file_path.name} → AAP job {job_id} (key: {filename_key})")
+                logger.info(f"✅ Auto-loaded: {file_path.name} → AAP job {job_id} (key: {filename_key}) - {len(lines)} lines")
                 loaded_count += 1
                 
             except Exception as e:
                 logger.warning(f"❌ Failed to auto-load {file_path.name}: {e}")
+                skipped_count += 1
     
+    # Summary report
     if loaded_count > 0:
         logger.info(f"🎉 Successfully auto-loaded {loaded_count} log files")
         logger.info(f"📋 Available for replay: {list(auto_loaded_files.keys())}")
     else:
-        logger.info("📂 No log files found in sample-logs directory")
+        logger.info("📂 No valid log files found in sample-logs directory")
+    
+    if skipped_count > 0:
+        logger.info(f"⚠️  Skipped {skipped_count} invalid/empty files")
+        
+    if loaded_count == 0 and skipped_count == 0:
         logger.info(f"💡 Drop .log or .txt files in {AUTO_LOAD_DIR} to auto-load them!")
 
 # AAP log parsing functions
@@ -995,13 +1026,20 @@ def generate_logs(request: GenerateLogsRequest):
 @app.post("/api/logs/replay")
 def start_replay(request: ReplayRequest, background_tasks: BackgroundTasks):
     """Start replaying logs"""
-    if replay_state["active"]:
-        raise HTTPException(status_code=409, detail="Replay already active")
+    # CRITICAL FIX: Force stop any existing replay before starting new one
+    if replay_state["active"] and replay_state["stop_event"]:
+        logger.warning("🛑 Forcing stop of existing replay before starting new one")
+        replay_state["stop_event"].set()
+        # Wait a moment for the old task to clean up
+        time.sleep(0.5)
     
-    # Set up replay state early (needed for "all" functionality)
+    # Set up replay state early (needed for "all" functionality)  
     stop_event = threading.Event()
     replay_state["active"] = True
     replay_state["stop_event"] = stop_event
+    
+    # CRITICAL FIX: Clear global stop flag for new replay
+    global_stop_flag.clear()
     
     # Find source file
     if request.source == "uploaded":
@@ -1013,6 +1051,34 @@ def start_replay(request: ReplayRequest, background_tasks: BackgroundTasks):
                 raise HTTPException(status_code=404, detail="No uploaded files found")
             source_path = max(uploaded_files, key=lambda p: p.stat().st_mtime)
             logger.info(f"Using latest uploaded file: {source_path.name}")
+        elif request.id_or_path == "all":
+            # Special case: replay all uploaded files sequentially
+            uploaded_files = list(UPLOADS_DIR.glob("*.log"))
+            if not uploaded_files:
+                replay_state["active"] = False  # Reset state on error
+                raise HTTPException(status_code=404, detail="No uploaded files found")
+            
+            # Set up current job info for "all" replay
+            replay_state["current_job"] = {
+                "source": request.source,
+                "path": "all_uploaded_files",
+                "mode": request.mode,
+                "rate": request.rate_lines_per_sec,
+                "loop": request.loop,
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "files_count": len(uploaded_files),
+                "files": [f.name for f in uploaded_files]
+            }
+            
+            # Start background task to replay all files
+            background_tasks.add_task(_replay_all_uploaded, request, stop_event)
+            
+            return {
+                "status": "started", 
+                "source_path": "all_uploaded_files",
+                "files_count": len(uploaded_files),
+                "files": [f.name for f in uploaded_files]
+            }
         else:
             source_path = UPLOADS_DIR / f"{request.id_or_path}.log"
     elif request.source == "generated":
@@ -1089,10 +1155,15 @@ def start_replay(request: ReplayRequest, background_tasks: BackgroundTasks):
 @app.post("/api/replay/stop")
 def stop_replay():
     """Stop active replay"""
-    if not replay_state["active"]:
-        raise HTTPException(status_code=400, detail="No active replay")
+    logger.info(f"🛑 Stop request received. Active: {replay_state['active']}, Stop event exists: {replay_state['stop_event'] is not None}")
     
+    # CRITICAL FIX: ALWAYS set global stop flag regardless of state
+    logger.info("🛑 Setting global stop flag (works even with corrupted state)")
+    global_stop_flag.set()
+    
+    # Also set regular stop event if it exists
     if replay_state["stop_event"]:
+        logger.info("🛑 Setting regular stop event")
         replay_state["stop_event"].set()
     
     return {"status": "stopping"}
@@ -1176,16 +1247,42 @@ def _replay_logs(source_path: Path, request: ReplayRequest, stop_event: threadin
     try:
         logger.info(f"Starting replay from {source_path}")
         
+        # Pre-validate file has content to prevent infinite loop
+        file_size = source_path.stat().st_size
+        if file_size == 0:
+            logger.error(f"❌ Cannot replay empty file: {source_path.name} (0 bytes)")
+            return
+        
+        # Count actual content lines
+        with open(source_path, 'r') as f:
+            content_lines = [line.strip() for line in f if line.strip()]
+        
+        if len(content_lines) == 0:
+            logger.error(f"❌ Cannot replay file with no content: {source_path.name} (no valid lines)")
+            return
+            
+        logger.info(f"📋 File validated: {source_path.name} - {len(content_lines)} lines to replay")
+        
+        loop_count = 0
         while True:
+            if stop_event.is_set() or global_stop_flag.is_set():
+                logger.info("🛑 Replay stopped by user (cycle check)")
+                return
+                
+            loop_count += 1
+            lines_processed = 0
+            
             with open(source_path, 'r') as f:
                 for line_num, line in enumerate(f, 1):
-                    if stop_event.is_set():
-                        logger.info("Replay stopped by user")
+                    if stop_event.is_set() or global_stop_flag.is_set():
+                        logger.info("🛑 Replay stopped by user (line check)")
                         return
                     
                     line = line.rstrip('\n\r')  # Only remove newlines, preserve spaces!
                     if not line:
                         continue
+                    
+                    lines_processed += 1
                     
                     # Add jitter
                     if request.jitter_ms > 0:
@@ -1204,17 +1301,26 @@ def _replay_logs(source_path: Path, request: ReplayRequest, stop_event: threadin
                     if request.rate_lines_per_sec > 0:
                         time.sleep(1.0 / request.rate_lines_per_sec)
             
+            logger.info(f"Completed replay cycle {loop_count}: processed {lines_processed} lines from {source_path.name}")
+            
+            # Check for stop before deciding to loop
+            if stop_event.is_set() or global_stop_flag.is_set():
+                logger.info("🛑 Replay stopped by user (before loop decision)")
+                return
+            
             if not request.loop:
                 break
             
-            logger.info("Looping replay...")
+            logger.info(f"🔄 Looping replay of {source_path.name}...")
     
     except Exception as e:
         logger.error(f"Error during replay: {e}")
     finally:
+        # CRITICAL FIX: Always clean up state, even on exceptions
         replay_state["active"] = False
         replay_state["current_job"] = None
-        logger.info("Replay completed")
+        replay_state["stop_event"] = None
+        logger.info("Replay completed and state cleaned up")
 
 def _write_to_output_file(line: str):
     """Write log line to output file - normalize to structured AAP format like real AAP"""
@@ -1257,40 +1363,214 @@ def _replay_all_auto_loaded(request: ReplayRequest, stop_event: threading.Event)
     try:
         files_to_replay = list(auto_loaded_files.items())
         total_files = len(files_to_replay)
+        cycle_count = 0
         
-        logger.info(f"Starting replay of all {total_files} auto-loaded files")
+        logger.info(f"Starting replay of all {total_files} auto-loaded files with loop={request.loop}")
         
-        for file_index, (file_key, file_path) in enumerate(files_to_replay, 1):
-            if stop_event.is_set():
-                logger.info("Replay all stopped by user")
+        # Handle looping at the "all files" level, not individual file level
+        while True:
+            if stop_event.is_set() or global_stop_flag.is_set():
+                logger.info("🛑 Replay all stopped by user (outer loop)")
                 return
                 
-            logger.info(f"Replaying file {file_index}/{total_files}: {file_key}")
+            cycle_count += 1
+            replayed_count = 0
+            skipped_count = 0
             
-            # Update current job info to show progress
-            if replay_state["current_job"]:
-                replay_state["current_job"]["current_file"] = file_key
-                replay_state["current_job"]["progress"] = f"{file_index}/{total_files}"
+            logger.info(f"🔄 Starting cycle {cycle_count} of all files")
             
-            # Replay this specific file
-            source_path = Path(file_path)
-            _replay_logs(source_path, request, stop_event)
-            
-            if stop_event.is_set():
-                logger.info("Replay all stopped by user")
-                return
+            for file_index, (file_key, file_path) in enumerate(files_to_replay, 1):
+                if stop_event.is_set() or global_stop_flag.is_set():
+                    logger.info("🛑 Replay all stopped by user (file loop)")
+                    return
+                    
+                logger.info(f"Processing file {file_index}/{total_files}: {file_key} (cycle {cycle_count})")
                 
-            # Small delay between files
-            time.sleep(0.5)
+                # Update current job info to show progress
+                if replay_state["current_job"]:
+                    replay_state["current_job"]["current_file"] = file_key
+                    replay_state["current_job"]["progress"] = f"{file_index}/{total_files}"
+                    replay_state["current_job"]["cycle"] = cycle_count
+                
+                # Pre-validate file before attempting replay
+                source_path = Path(file_path)
+                
+                try:
+                    file_size = source_path.stat().st_size
+                    if file_size == 0:
+                        logger.warning(f"⚠️  Skipping empty file: {file_key} (0 bytes)")
+                        skipped_count += 1
+                        continue
+                    
+                    # Quick content check
+                    with open(source_path, 'r') as f:
+                        content_lines = [line.strip() for line in f if line.strip()]
+                    
+                    if len(content_lines) == 0:
+                        logger.warning(f"⚠️  Skipping file with no content: {file_key} (no valid lines)")
+                        skipped_count += 1
+                        continue
+                    
+                    # Create a modified request with loop=False for individual files
+                    individual_request = ReplayRequest(
+                        source=request.source,
+                        id_or_path=request.id_or_path,
+                        mode=request.mode,
+                        rate_lines_per_sec=request.rate_lines_per_sec,
+                        loop=False,  # Individual files should NOT loop
+                        jitter_ms=request.jitter_ms,
+                        otlp_endpoint=request.otlp_endpoint
+                    )
+                    
+                    # Replay this specific file (once)
+                    logger.info(f"🎬 Replaying {file_key}: {len(content_lines)} lines (cycle {cycle_count})")
+                    _replay_logs(source_path, individual_request, stop_event)
+                    replayed_count += 1
+                    
+                except Exception as e:
+                    logger.error(f"❌ Error processing file {file_key}: {e}")
+                    skipped_count += 1
+                    continue
+                
+                if stop_event.is_set() or global_stop_flag.is_set():
+                    logger.info("🛑 Replay all stopped by user (after file)")
+                    return
+                    
+                # Small delay between files  
+                time.sleep(0.5)
+                
+            logger.info(f"Completed cycle {cycle_count}: {replayed_count} replayed, {skipped_count} skipped")
             
-        logger.info(f"Completed replay of all {total_files} auto-loaded files")
+            # Check for stop before deciding to loop the entire sequence
+            if stop_event.is_set() or global_stop_flag.is_set():
+                logger.info("🛑 Replay all stopped by user (before sequence loop decision)")
+                return
+            
+            # Check if we should loop the entire sequence
+            if not request.loop:
+                break
+                
+            logger.info(f"🔄 Looping back to start of all files (beginning cycle {cycle_count + 1})...")
+            
+        logger.info(f"Completed replay all after {cycle_count} cycles")
         
     except Exception as e:
         logger.error(f"Error during replay all: {e}")
     finally:
+        # CRITICAL FIX: Always clean up state, even on exceptions
         replay_state["active"] = False
         replay_state["current_job"] = None
-        logger.info("Replay all completed")
+        replay_state["stop_event"] = None
+        logger.info("Replay all completed and state cleaned up")
+
+def _replay_all_uploaded(request: ReplayRequest, stop_event: threading.Event):
+    """Replay all uploaded files sequentially"""
+    try:
+        # Get all uploaded files, sorted by modification time (newest first)
+        uploaded_files = list(UPLOADS_DIR.glob("*.log"))
+        uploaded_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        
+        files_to_replay = [(f.name, str(f)) for f in uploaded_files]
+        total_files = len(files_to_replay)
+        cycle_count = 0
+        
+        logger.info(f"Starting replay of all {total_files} uploaded files with loop={request.loop}")
+        
+        # Handle looping at the "all files" level, not individual file level
+        while True:
+            if stop_event.is_set() or global_stop_flag.is_set():
+                logger.info("🛑 Replay all uploaded stopped by user (outer loop)")
+                return
+                
+            cycle_count += 1
+            replayed_count = 0
+            skipped_count = 0
+            
+            logger.info(f"🔄 Starting cycle {cycle_count} of all uploaded files")
+            
+            for file_index, (file_name, file_path) in enumerate(files_to_replay, 1):
+                if stop_event.is_set() or global_stop_flag.is_set():
+                    logger.info("🛑 Replay all uploaded stopped by user (file loop)")
+                    return
+                    
+                logger.info(f"Processing uploaded file {file_index}/{total_files}: {file_name} (cycle {cycle_count})")
+                
+                # Update current job info to show progress
+                if replay_state["current_job"]:
+                    replay_state["current_job"]["current_file"] = file_name
+                    replay_state["current_job"]["progress"] = f"{file_index}/{total_files}"
+                    replay_state["current_job"]["cycle"] = cycle_count
+                
+                # Pre-validate file before attempting replay
+                source_path = Path(file_path)
+                
+                try:
+                    file_size = source_path.stat().st_size
+                    if file_size == 0:
+                        logger.warning(f"⚠️  Skipping empty uploaded file: {file_name} (0 bytes)")
+                        skipped_count += 1
+                        continue
+                    
+                    # Quick content check
+                    with open(source_path, 'r') as f:
+                        content_lines = [line.strip() for line in f if line.strip()]
+                    
+                    if len(content_lines) == 0:
+                        logger.warning(f"⚠️  Skipping uploaded file with no content: {file_name} (no valid lines)")
+                        skipped_count += 1
+                        continue
+                    
+                    # Create a modified request with loop=False for individual files
+                    individual_request = ReplayRequest(
+                        source=request.source,
+                        id_or_path=request.id_or_path,
+                        mode=request.mode,
+                        rate_lines_per_sec=request.rate_lines_per_sec,
+                        loop=False,  # Individual files should NOT loop
+                        jitter_ms=request.jitter_ms,
+                        otlp_endpoint=request.otlp_endpoint
+                    )
+                    
+                    # Replay this specific file (once)
+                    logger.info(f"🎬 Replaying uploaded {file_name}: {len(content_lines)} lines (cycle {cycle_count})")
+                    _replay_logs(source_path, individual_request, stop_event)
+                    replayed_count += 1
+                    
+                except Exception as e:
+                    logger.error(f"❌ Error processing uploaded file {file_name}: {e}")
+                    skipped_count += 1
+                    continue
+                
+                if stop_event.is_set() or global_stop_flag.is_set():
+                    logger.info("🛑 Replay all uploaded stopped by user (after file)")
+                    return
+                    
+                # Small delay between files  
+                time.sleep(0.5)
+                
+            logger.info(f"Completed uploaded cycle {cycle_count}: {replayed_count} replayed, {skipped_count} skipped")
+            
+            # Check for stop before deciding to loop the entire sequence
+            if stop_event.is_set() or global_stop_flag.is_set():
+                logger.info("🛑 Replay all uploaded stopped by user (before sequence loop decision)")
+                return
+            
+            # Check if we should loop the entire sequence
+            if not request.loop:
+                break
+                
+            logger.info(f"🔄 Looping back to start of all uploaded files (beginning cycle {cycle_count + 1})...")
+            
+        logger.info(f"Completed replay all uploaded after {cycle_count} cycles")
+        
+    except Exception as e:
+        logger.error(f"Error during replay all uploaded: {e}")
+    finally:
+        # CRITICAL FIX: Always clean up state, even on exceptions
+        replay_state["active"] = False
+        replay_state["current_job"] = None
+        replay_state["stop_event"] = None # Ensure stop_event is cleared
+        logger.info("Replay all uploaded completed and state cleaned up")
 
 def _send_to_otlp(line: str, endpoint: str):
     """Send log line to OTLP endpoint"""

@@ -1,10 +1,14 @@
 # Default values for aap-mock.
 # This is a YAML-formatted file.
 
+# Deployment configuration
 replicaCount: 1
 
+# Namespace is handled by Helm --namespace flag
+# Example: helm install my-release ./chart/aap-mock --namespace my-namespace --create-namespace
+
 image:
-  repository: quay.io/example/aap-mock
+  repository: quay.io/matrujil/aap-mock
   pullPolicy: Always
   tag: "latest"
 
@@ -24,13 +28,11 @@ podAnnotations: {}
 
 podSecurityContext:
   runAsNonRoot: true
-  runAsUser: 1001
-  fsGroup: 0
+  # Let OpenShift assign user IDs automatically
 
 securityContext:
   allowPrivilegeEscalation: false
   runAsNonRoot: true
-  runAsUser: 1001
   capabilities:
     drop:
     - ALL
@@ -44,9 +46,10 @@ service:
 route:
   enabled: true
   annotations: {}
-  tls:
-    termination: edge
-    insecureEdgeTerminationPolicy: Redirect
+  tls: {}
+    # For testing, use HTTP route without TLS termination
+    # termination: edge
+    # insecureEdgeTerminationPolicy: Redirect
 
 ingress:
   enabled: false
@@ -97,6 +100,20 @@ app:
   # Environment variables
   env: {}
     # OTLP_ENDPOINT: "http://otel-collector:4318/v1/logs"
+    # NAMESPACE: "my-custom-namespace"
+
+# Environment-specific overrides
+# Uncomment and modify for different deployment environments
+# development:
+#   replicaCount: 1
+#   resources:
+#     limits:
+#       memory: "256Mi"
+# production:
+#   replicaCount: 3
+#   resources:
+#     limits:
+#       memory: "1Gi"
 
 probes:
   liveness:
