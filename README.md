@@ -601,14 +601,15 @@ The refresh endpoint makes it easy to add log files in OpenShift without pod res
 #### **Method 1: Direct File Copy (Easiest)**
 ```bash
 # Copy files directly into running pod (recommended)
-POD=$(oc get pods -l app.kubernetes.io/name=aap-mock -o name | head -n1)
+POD=$(oc get pods -l app.kubernetes.io/name=aap-mock -o jsonpath='{.items[0].metadata.name}')
 
 # Copy single files
 oc cp your-log-file.log $POD:/app/sample-logs/
 oc cp examples/demo-job-failed.log $POD:/app/sample-logs/
 
-# OR copy entire directory
-oc cp examples/ $POD:/app/sample-logs/
+# Copy directory CONTENTS (note the trailing /.)
+# This copies files directly to sample-logs/, not as a subdirectory
+oc cp examples/. $POD:/app/sample-logs/
 
 # Refresh to detect new files
 curl -X POST https://your-aap-mock-route/api/auto-loaded/refresh
@@ -672,14 +673,15 @@ helm upgrade -i aap-mock ./chart/aap-mock \
   --set persistence.size=1Gi
 
 # Then easily add files anytime:
-POD=$(oc get pods -l app.kubernetes.io/name=aap-mock -o name | head -n1) 
+POD=$(oc get pods -l app.kubernetes.io/name=aap-mock -o jsonpath='{.items[0].metadata.name}')
 
 # Copy single file
 oc cp your-log.log $POD:/app/sample-logs/
 
-# Copy entire directory 
-oc cp examples/ $POD:/app/sample-logs/
+# Copy directory CONTENTS (note the trailing /.)  
+oc cp examples/. $POD:/app/sample-logs/
 
+# Refresh to detect new files
 curl -X POST https://your-route/api/auto-loaded/refresh
 ```
 
@@ -1073,26 +1075,26 @@ spec:
       return hs
 ```
 
-### **Log Aggregation (Optional)**
+### **Log Aggregation (Loki/Grafana)**
 
-**Grafana Alloy** (if you also want file-based log streaming):
-```yaml
-loki.source.file "aap_logs" {
-  targets = discovery.kubernetes.pods.targets
-  forward_to = [loki.write.default.receiver]
-  path_targets = [{
-    __path__ = "/var/log/aap-mock/output.log"
-  }]
-}
+The AAP Mock service writes all replayed logs to a file that can be collected by Loki for analysis in Grafana.
+
+**Log File Path**: `/var/log/aap-mock/output.log`
+
+**Format**: Structured AAP-compatible log format (automatically normalized from any input format)
+
+**Accessing the log file**:
+```bash
+# View logs from the running pod
+POD=$(oc get pods -l app.kubernetes.io/name=aap-mock -o jsonpath='{.items[0].metadata.name}')
+oc exec $POD -- tail -f /var/log/aap-mock/output.log
+
+# Or access the pod interactively
+oc rsh $POD
+tail -f /var/log/aap-mock/output.log
 ```
 
-**Fluentd/Fluent Bit**:
-```yaml
-[INPUT]
-    Name tail
-    Path /var/log/aap-mock/output.log
-    Tag aap.jobs
-```
+**To configure Loki/Promtail to scrape these logs**, point your log collector to the file path `/var/log/aap-mock/output.log` in the aap-mock pod. Use the pod label selector `app.kubernetes.io/name=aap-mock` to identify the correct pod in your namespace.
 
 ## Troubleshooting
 
