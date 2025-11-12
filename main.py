@@ -24,11 +24,43 @@ from pydantic import BaseModel
 import requests
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# Application logs → file (for debugging/troubleshooting)
+# AAP mock logs → stdout (for Alloy/Promtail collection)
+
+# Application logger - writes to file + stdout
+app_logger = logging.getLogger(__name__)
+app_logger.setLevel(logging.INFO)
+
+# Try to add file handler for application logs (optional - may fail locally)
+try:
+    app_log_handler = logging.FileHandler('/var/log/aap-mock/app.log')
+    app_log_handler.setFormatter(logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    ))
+    app_logger.addHandler(app_log_handler)
+except (PermissionError, FileNotFoundError):
+    # If file logging fails, just use stdout (common for local development)
+    pass
+
+# Console handler for application logs (always available)
+app_console_handler = logging.StreamHandler()
+app_console_handler.setFormatter(logging.Formatter(
+    '[APP] %(asctime)s - %(levelname)s - %(message)s'
+))
+app_logger.addHandler(app_console_handler)
+
+# AAP mock logger - writes ONLY to stdout (Kubernetes captures this)
+aap_logger = logging.getLogger('aap_mock')
+aap_logger.setLevel(logging.INFO)
+aap_logger.propagate = False  # Don't propagate to root logger
+
+# Stdout handler for AAP mock logs (what Alloy collects)
+aap_stdout_handler = logging.StreamHandler()
+aap_stdout_handler.setFormatter(logging.Formatter('%(message)s'))  # Raw format - already structured
+aap_logger.addHandler(aap_stdout_handler)
+
+# For backward compatibility with existing code
+logger = app_logger
 
 # Configuration
 DATA_DIR = Path("/data")
@@ -1323,9 +1355,15 @@ def _replay_logs(source_path: Path, request: ReplayRequest, stop_event: threadin
         logger.info("Replay completed and state cleaned up")
 
 def _write_to_output_file(line: str):
-    """Write log line to output file - normalize to structured AAP format like real AAP"""
+    """Write log line to stdout for Kubernetes log collection (Alloy/Promtail)"""
     # Convert any format to structured AAP format for log aggregation
     structured_line = _normalize_to_structured_aap_format(line)
+    
+    # PRIMARY: Write to stdout for Kubernetes/Alloy collection
+    aap_logger.info(structured_line)
+    
+    # OPTIONAL: Also write to file for backward compatibility / local debugging
+    # You can disable this in production if you only want stdout
     with open(OUTPUT_LOG_FILE, "a") as f:
         f.write(f"{structured_line}\n")
 
