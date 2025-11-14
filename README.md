@@ -88,10 +88,10 @@ curl -X POST http://localhost:8080/api/logs/replay \
 
 ```bash
 # Build (for x86_64 clusters)
-podman build --platform linux/amd64 -t quay.io/matrujil/aap-mock:latest .
+podman build --platform linux/amd64 -t quay.io/ecosystem-appeng/aap-mock:latest .
 
 # Push
-podman push quay.io/matrujil/aap-mock:latest
+podman push quay.io/ecosystem-appeng/aap-mock:latest
 ```
 
 ## Log Upload & Replay
@@ -156,7 +156,7 @@ curl -X POST http://HOST/api/replay/stop
 # Deploy
 helm upgrade --install aap-mock ./chart/aap-mock \
   --namespace alm-infra-final --create-namespace \
-  --set image.repository=quay.io/matrujil/aap-mock \
+  --set image.repository=quay.io/ecosystem-appeng/aap-mock \
   --set image.tag=latest \
   --set image.pullPolicy=Always
 
@@ -307,7 +307,7 @@ loki.process "aap_mock" {
 
 ```yaml
 image:
-  repository: quay.io/matrujil/aap-mock
+  repository: quay.io/ecosystem-appeng/aap-mock
   tag: latest
   pullPolicy: Always
 
@@ -493,4 +493,4 @@ oc logs -f -l app.kubernetes.io/name=aap-mock -n alm-infra-final | grep -v "^\[A
 **🎯 Built for**: Development teams needing AAP API compatibility without AAP licensing costs  
 **🏗️ Platform**: Red Hat OpenShift / Kubernetes  
 **🔧 Stack**: Python 3.9+, FastAPI, Helm  
-**📦 Container**: `quay.io/matrujil/aap-mock:latest`
+**📦 Container**: `quay.io/ecosystem-appeng/aap-mock:latest`

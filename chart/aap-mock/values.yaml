@@ -8,7 +8,7 @@ replicaCount: 1
 # Example: helm install my-release ./chart/aap-mock --namespace my-namespace --create-namespace
 
 image:
-  repository: quay.io/matrujil/aap-mock
+  repository: quay.io/ecosystem-appeng/aap-mock
   pullPolicy: Always
   tag: "latest"
 
